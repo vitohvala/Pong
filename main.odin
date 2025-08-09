@@ -1,0 +1,1345 @@
+package Pong
+
+/* TODO :
+        Linux and opengl/vulkan ????
+        WebGL ????
+*/
+
+
+import "core:fmt"
+import win "core:sys/windows"
+import "core:slice"
+import "core:mem"
+import v "core:mem/virtual"
+import "core:os"
+import "core:strings"
+import "base:runtime"
+import "core:log"
+import "core:time"
+import "core:math"
+import "core:math/rand"
+import "core:math/linalg"
+import d11 "vendor:directx/d3d11"
+import dxgi "vendor:directx/dxgi"
+import d3d  "vendor:directx/d3d_compiler"
+import xa "vendor:windows/XAudio2"
+import stbi "vendor:stb/image" //remove this
+
+
+import atlas "atlas"
+
+/*===============================================================================
+                                        STRUCTS
+  ===============================================================================*/
+
+vec2 :: [2]f32
+vec3 :: [3]f32
+vec4 :: [4]f32
+
+MAX_SPRITES :: 8192
+
+Sprite :: struct {
+    pos : vec2,
+    size : vec2,
+    atlaspos : vec2,
+    atlas_size : vec2,
+    color : vec3,
+}
+
+Constants :: struct #align(16) {
+    screensize : vec2,
+    atlassize  : vec2,
+}
+
+SpriteBatch :: struct {
+    sprite : []Sprite,
+    size : u32,
+}
+
+ButtonState :: struct {
+    half_transition_count: int,
+    ended_down: bool,
+}
+
+Buttons :: enum {
+    Move_Up,
+    Move_Down,
+    Start,
+    Back,
+}
+
+XSound :: struct {
+    mvoice : ^xa.IXAudio2MasteringVoice,
+    srcvoice : ^xa.IXAudio2SourceVoice,
+    volume : f32,
+}
+
+GSound :: struct {
+    wvf : win.WAVEFORMATEX,
+    data : xa.BUFFER,
+    xaudio : ^xa.IXAudio2,
+    sfx : XSound,
+    music : XSound,
+}
+
+GameState :: struct {
+    paddle : vec4,
+    ai_paddle : vec4,
+    ball : vec4,
+    ball_dir : vec2,
+    ball_speed : f32,
+    paddle_speed : f32,
+    score: u32,
+    score_cpu : u32,
+    ai_target_y: f32,
+    ai_reaction_delay: f32,
+    ai_reaction_timer: f32,
+    ai_ctimer, p_ctimer : time.Tick,
+}
+
+
+DxData :: struct {
+    device : ^d11.IDevice,
+    dcontext: ^d11.IDeviceContext,
+    framebuffer_rtv: ^d11.IRenderTargetView,
+    swapchain : ^dxgi.ISwapChain4,
+    viewport : d11.VIEWPORT,
+    vertex_shader : ^d11.IVertexShader,
+    pixel_shader :  ^d11.IPixelShader,
+    sprite_SRV : ^d11.IShaderResourceView,
+    sprite_buffer : ^d11.IBuffer,
+    rstate : ^d11.IRasterizerState,
+    atlas_SRV : ^d11.IShaderResourceView,
+    sampler : ^d11.ISamplerState,
+    constant_data : Constants,
+    constant_buffer : ^d11.IBuffer,
+}
+
+
+Particle :: struct {
+    pos : []vec2,
+    dir : []vec2,
+    timer : f32,
+    count : u32,
+}
+
+/*===============================================================================
+                                        GLOBALS
+  ===============================================================================*/
+HV_WHITE :: vec3{1, 1, 1}
+HV_RED   :: vec3{1.0, 0.1, 0.1}
+HV_GREEN :: vec3{0.2, 0.8, 0.4}
+HV_BLUE  :: vec3{0, 0, 1}
+HV_BLACK :: vec3{0, 0, 0}
+
+running := false
+sb : SpriteBatch
+
+/*===============================================================================
+                                      PROCEDURES
+  ===============================================================================*/
+win_proc :: proc "stdcall" (hwnd: win.HWND,
+    msg: win.UINT,
+    wparam: win.WPARAM,
+    lparam: win.LPARAM) -> win.LRESULT
+{
+    context = runtime.default_context()
+    switch msg {
+        case win.WM_CLOSE :
+            running = false
+        fallthrough
+        case win.WM_DESTROY :
+            running = false
+        win.PostQuitMessage(0)
+        return 0
+        case win.WM_ERASEBKGND : return 1
+        case win.WM_SIZE : {
+            crect :win.RECT
+            win.GetClientRect(hwnd, &crect)
+        }
+        case win.WM_NCLBUTTONDOWN:
+        {
+            //log.info("NCLBUTTONDOWN")
+            win.SendMessageW(hwnd, win.WM_NCHITTEST, wparam, lparam)
+            point : win.POINT
+            win.GetCursorPos(&point)
+            win.ScreenToClient(hwnd, &point)
+            win.PostMessageW(hwnd, win.WM_MOUSEMOVE, 0, int(point.x | point.y << 16))
+        }
+        case win.WM_ENTERSIZEMOVE : { win.SetTimer(hwnd, 1, 0, nil); return 0}
+        case win.WM_EXITSIZEMOVE : { win.KillTimer(hwnd, 1); return 0 }
+        case win.WM_TIMER : {
+            //update
+            return 0
+        }
+        case win.WM_PAINT:
+        {
+            pst : win.PAINTSTRUCT
+            win.BeginPaint(hwnd, &pst)
+
+            win.EndPaint(hwnd, &pst)
+        }
+        case win.WM_SYSKEYDOWN :
+        case win.WM_SYSKEYUP :
+        case win.WM_KEYDOWN :
+        case win.WM_KEYUP : {
+
+        }
+
+    }
+
+    return win.DefWindowProcW(hwnd, msg, wparam, lparam)
+}
+
+hv_messagebox :: #force_inline proc (s : string) {
+    win.MessageBoxW(nil, win.utf8_to_wstring(s), win.L("FATAL"),
+                    win.MB_OK | win.MB_ICONERROR)
+}
+
+hv_assert :: #force_inline proc(assertion: bool, msg_args : ..any, loc := #caller_location)
+{
+    when ODIN_DISABLE_ASSERT {
+        if !assertion {
+            //context = runtime.default_context()
+
+            lp_msg_buf : win.wstring
+            dw := win.GetLastError()
+            message := fmt.tprint(..msg_args)
+
+            lp_len := win.FormatMessageW(win.FORMAT_MESSAGE_ALLOCATE_BUFFER |
+                              win.FORMAT_MESSAGE_FROM_SYSTEM |
+                              win.FORMAT_MESSAGE_IGNORE_INSERTS,
+                              nil, win.GetLastError(),
+                              win.MAKELANGID(win.LANG_NEUTRAL, win.SUBLANG_DEFAULT),
+                              lp_msg_buf, 0, nil)
+
+            if(lp_len == 0) {
+                //errstr := fmt.tprint(..msg_args)
+                hv_messagebox(message)
+                win.ExitProcess(dw)
+                //running = false
+            }
+
+            err_msg_str, err_ := win.wstring_to_utf8(lp_msg_buf, int(lp_len))
+
+            if int(err_) > 0 {
+                enum_str, _ := fmt.enum_value_to_string(err_)
+                hv_messagebox(enum_str)
+                running = false
+            }
+
+            a := [?]string { err_msg_str, message }
+            errstr := strings.concatenate(a[:])
+
+            hv_messagebox(errstr)
+
+            win.LocalFree(lp_msg_buf)
+
+            running = false
+        }
+    } else {
+        if !assertion {
+            message := fmt.tprintln(..msg_args)
+
+            assert(assertion, message)
+
+            running = false
+        }
+    }
+}
+
+create_window :: proc(width, height : i32, window_name : string) -> win.HWND {
+    instance := win.HINSTANCE(win.GetModuleHandleW(nil))
+    assert(instance != nil)
+
+    wca : win.WNDCLASSW
+    wca.hInstance = instance
+    wca.lpszClassName = win.L("Odin ROCKS")
+    wca.style = win.CS_HREDRAW | win.CS_VREDRAW | win.CS_OWNDC
+    wca.lpfnWndProc = win_proc
+    wca.hIcon = win.LoadIconW(nil, transmute(win.wstring)(win.IDI_APPLICATION))
+    wca.hCursor = win.LoadCursorW(nil, transmute(win.wstring)(win.IDC_ARROW))
+
+    cls := win.RegisterClassW(&wca)
+    assert(cls != 0, "Class creation failed")
+
+    wrect := win.RECT{0, 0, width, height}
+    win.AdjustWindowRect(&wrect, win.WS_OVERLAPPEDWINDOW, win.FALSE)
+
+
+    window_name_wstring := win.utf8_to_wstring(window_name)
+
+    handle := win.CreateWindowExW(0, wca.lpszClassName,
+        window_name_wstring,
+        win.WS_OVERLAPPEDWINDOW,
+        10, 10,
+        wrect.right - wrect.left, wrect.bottom - wrect.top,
+        nil, nil, instance, nil)
+
+    assert(handle != nil, "Window Creation Failed\n")
+
+    log.info("Created window", window_name);
+    return handle
+}
+
+compile_shader :: proc(entrypoint, shader_model : cstring,
+                       blob_out : ^^d11.IBlob) -> win.HRESULT
+{
+    hr : win.HRESULT = win.S_OK
+    // WARNINGS_ARE_ERRORS on release
+    dw_shader_flags := d3d.D3DCOMPILE { .ENABLE_STRICTNESS, .PACK_MATRIX_COLUMN_MAJOR,  }
+    when ODIN_DEBUG {
+        dw_shader_flags += { .DEBUG, .SKIP_OPTIMIZATION }
+    } else {
+        dw_shader_flags += { .OPTIMIZATION_LEVEL3 }
+    }
+
+    error_blob : ^d11.IBlob
+    hr = d3d.Compile(raw_data(shaders_hlsl), len(shaders_hlsl), "shaders.hlsl", nil, nil, entrypoint,
+                     shader_model, 0, 0, blob_out, &error_blob)
+
+    //should i assert this??
+    if error_blob != nil {
+        buffer_ptr := error_blob->GetBufferPointer()
+        bytes := cast([^]u8)buffer_ptr
+        err_str8 := string(bytes[:error_blob->GetBufferSize()])
+        hv_assert(win.SUCCEEDED(hr), err_str8)
+    }
+
+    if (error_blob != nil) { error_blob->Release() }
+
+    return hr
+}
+
+init_d3d :: proc(handle : win.HWND) -> DxData{
+    d : DxData
+    //device : ^d11.IDevice
+    //dcontext: ^d11.IDeviceContext
+    //framebuffer_rtv: ^d11.IRenderTargetView
+    //swapchain4 : ^dxgi.ISwapChain4
+    ////do i need the viewport really
+    //viewport : d11.VIEWPORT
+    //vertex_shader : ^d11.IVertexShader
+    //pixel_shader :  ^d11.IPixelShader
+    ////input_layout :  ^d11.IInputLayout
+    ////vertex_buffer : ^d11.IBuffer
+    //sprite_SRV : ^d11.IShaderResourceView
+    //sprite_buffer : ^d11.IBuffer
+    //rstate : ^d11.IRasterizerState
+    //atlas_SRV : ^d11.IShaderResourceView
+    //sampler : ^d11.ISamplerState
+
+    {
+        feature_levels := [?]d11.FEATURE_LEVEL{._11_0}
+
+
+        //RELASE these
+        base_device : ^d11.IDevice
+        base_device_context : ^d11.IDeviceContext
+
+        creation_flags := d11.CREATE_DEVICE_FLAGS { .BGRA_SUPPORT }
+
+        when ODIN_DEBUG {
+            creation_flags += { .DEBUG }
+        }
+
+        res := d11.CreateDevice(nil, .HARDWARE, nil, creation_flags,
+            &feature_levels[0], len(feature_levels),
+            d11.SDK_VERSION, &base_device, nil,
+            &base_device_context)
+
+        hv_assert(win.SUCCEEDED(res), string("CreateDevice() failed"))
+        //maybe do something where on release it just does MessageBox on error
+        //return false
+
+        when ODIN_DEBUG {
+            debug : ^d11.IDebug
+            base_device->QueryInterface(d11.IDebug_UUID, (^rawptr)(&debug))
+
+            assert(debug != nil)
+
+            info_queue : ^d11.IInfoQueue
+
+            res = debug->QueryInterface(d11.IInfoQueue_UUID, (^rawptr)(&info_queue))
+
+            hv_assert(win.SUCCEEDED(res), string("No debug:(("))
+
+            info_queue->SetBreakOnSeverity(.CORRUPTION, true)
+            info_queue->SetBreakOnSeverity(.ERROR, true)
+
+            allow_severities := []d11.MESSAGE_SEVERITY{.CORRUPTION, .ERROR, .INFO}
+
+            filter := d11.INFO_QUEUE_FILTER {
+                AllowList = {
+                    NumSeverities = u32(len(allow_severities)),
+                    pSeverityList = raw_data(allow_severities),
+                },
+            }
+            info_queue->AddStorageFilterEntries(&filter)
+            info_queue->Release()
+
+            debug->Release()
+
+            //TODO: make one for dxgi??
+            //  IDXGIInfoQueue* dxgiInfo;
+            //  hr = DXGIGetDebugInterface1(0, &IID_IDXGIInfoQueue, (void**)&dxgiInfo);
+            //  AssertHR(hr);
+            //  IDXGIInfoQueue_SetBreakOnSeverity(dxgiInfo, DXGI_DEBUG_ALL, DXGI_INFO_QUEUE_MESSAGE_SEVERITY_CORRUPTION, TRUE);
+            //  IDXGIInfoQueue_SetBreakOnSeverity(dxgiInfo, DXGI_DEBUG_ALL, DXGI_INFO_QUEUE_MESSAGE_SEVERITY_ERROR, TRUE);
+            //  IDXGIInfoQueue_Release(dxgiInfo);
+        }
+
+
+
+        res = base_device->QueryInterface(d11.IDevice_UUID, (^rawptr)(&d.device))
+        hv_assert(win.SUCCEEDED(res), string("D3D11 device interface query failed"))
+
+        res = base_device_context->QueryInterface(d11.IDeviceContext_UUID,
+            (^rawptr)(&d.dcontext))
+        hv_assert(win.SUCCEEDED(res), string("D3D11 device context interface query failed"))
+
+        //Maybe just use defer
+        base_device_context->Release()
+        base_device->Release()
+
+        dxgi_device: ^dxgi.IDevice
+        res = d.device->QueryInterface(dxgi.IDevice_UUID, (^rawptr)(&dxgi_device))
+        hv_assert(win.SUCCEEDED(res), string("DXGI device interface query failed"))
+
+        dxgi_adapter: ^dxgi.IAdapter
+        res = dxgi_device->GetAdapter(&dxgi_adapter)
+        hv_assert(win.SUCCEEDED(res), string("DXGI Adapter interface query failed"))
+
+        adapter_desc : dxgi.ADAPTER_DESC
+        dxgi_adapter->GetDesc(&adapter_desc)
+        graphics_card_buf : [128]u8
+        graphics_card := win.utf16_to_utf8(graphics_card_buf[:], adapter_desc.Description[:])
+        log.infof("Graphics device : {}", graphics_card )
+
+        dxgi_factory: ^dxgi.IFactory2
+        res = dxgi_adapter->GetParent(dxgi.IFactory2_UUID, (^rawptr)(&dxgi_factory))
+        hv_assert(win.SUCCEEDED(res), string("Get DXGI Factory failed"))
+
+        dxgi_adapter->Release()
+        dxgi_device->Release()
+
+
+        swapchain_desc := dxgi.SWAP_CHAIN_DESC1{
+            Width  = 0,
+            Height = 0,
+            Format = .B8G8R8A8_UNORM,
+            Stereo = false,
+            SampleDesc = {
+                Count   = 1,
+                Quality = 0,
+            },
+            BufferUsage = { .RENDER_TARGET_OUTPUT } ,
+            BufferCount = 2,
+            Scaling     = .STRETCH,
+            SwapEffect  =  .DISCARD,
+            AlphaMode   = .UNSPECIFIED,
+            Flags       = {},
+        }
+
+        samplec : u32 = 8
+        pnql : u32 = 0
+        d.device->CheckMultisampleQualityLevels(swapchain_desc.Format, samplec, &pnql)
+
+        if pnql == 0 {
+            samplec = 1
+            pnql = 1
+        }
+
+        swapchain_desc.SampleDesc.Count = samplec
+        swapchain_desc.SampleDesc.Quality = pnql - 1
+
+        log.infof("Multisample {}x", samplec)
+
+        swapchain: ^dxgi.ISwapChain1
+        res = dxgi_factory->CreateSwapChainForHwnd(d.device, handle, &swapchain_desc, nil, nil, &swapchain)
+        hv_assert(win.SUCCEEDED(res), string("CreateSwapChain Failed"))
+
+        // disable silly Alt+Enter changing monitor resolution to match window size
+        dxgi_factory->MakeWindowAssociation(handle, { .NO_ALT_ENTER })
+
+        dxgi_factory->Release()
+
+        swapchain->QueryInterface(dxgi.ISwapChain4_UUID, (^rawptr)(&d.swapchain))
+        hv_assert(win.SUCCEEDED(res), string("Swapchain4 query interface failed"))
+
+        swapchain->Release()
+
+        framebuffer: ^d11.ITexture2D
+        res = d.swapchain->GetBuffer(0, d11.ITexture2D_UUID, (^rawptr)(&framebuffer))
+        hv_assert(win.SUCCEEDED(res), string("GetBuffer failed"))
+
+        res = d.device->CreateRenderTargetView(framebuffer, nil, &d.framebuffer_rtv)
+        hv_assert(win.SUCCEEDED(res), string("CreateRenderTargetView failed"))
+
+        framebuffer->Release()
+
+        d.dcontext->OMSetRenderTargets(1, &d.framebuffer_rtv, nil)
+
+        {
+            swapchain_temp_desc : dxgi.SWAP_CHAIN_DESC1
+            d.swapchain->GetDesc1(&swapchain_temp_desc)
+            d.viewport.Width = f32(swapchain_temp_desc.Width)
+            d.viewport.Height = f32(swapchain_temp_desc.Height)
+            d.viewport.MaxDepth = 1
+            //since in odin everything is initialized to 0 i dont need to specify other things
+            d.dcontext->RSSetViewports(1, &d.viewport)
+            log.infof("Swapchain window width {}", swapchain_temp_desc.Width)
+            log.infof("Swapchain window Height {}", swapchain_temp_desc.Height)
+
+        }
+
+        vs_blob : ^d11.IBlob
+
+        //TODO: precompile shaders
+        compile_shader("vs_main", "vs_5_0", &vs_blob)
+
+
+        res = d.device->CreateVertexShader(vs_blob->GetBufferPointer(), vs_blob->GetBufferSize(), nil, &d.vertex_shader)
+        hv_assert(win.SUCCEEDED(res), string("CreateVertexShader failed"))
+
+
+        vs_blob->Release()
+
+        ps_blob : ^d11.IBlob
+        compile_shader("ps_main", "ps_5_0", &ps_blob)
+
+        res = d.device->CreatePixelShader(ps_blob->GetBufferPointer(), ps_blob->GetBufferSize(), nil, &d.pixel_shader)
+        hv_assert(win.SUCCEEDED(res), string("CreatePixelShader failed"))
+
+        ps_blob->Release()
+
+        rdesc := d11.RASTERIZER_DESC {
+            FillMode = .SOLID,
+            CullMode = .NONE,
+            FrontCounterClockwise = false,
+            DepthClipEnable = true,
+            MultisampleEnable = true,
+            AntialiasedLineEnable = true,
+            ScissorEnable = false
+        }
+
+        res =  d.device->CreateRasterizerState(&rdesc, &d.rstate)
+        hv_assert(win.SUCCEEDED(res), string("CreateRasterizerState failed"))
+
+        twidth, theight, nr_channels : i32
+        image_data := stbi.load(atlas.TEXTURE_FILENAME, &twidth, &theight, &nr_channels, 4)
+        hv_assert(image_data != nil, string("Image data is null"))
+
+        texture_desc := d11.TEXTURE2D_DESC{
+            Width      = u32(twidth),
+            Height     = u32(theight),
+            MipLevels  = 1,
+            ArraySize  = 1,
+            Format     = .R8G8B8A8_UNORM,
+            SampleDesc = {Count = 1},
+            Usage      = .IMMUTABLE,
+            BindFlags  = {.SHADER_RESOURCE},
+        }
+
+        texture_data := d11.SUBRESOURCE_DATA{
+            pSysMem     = &image_data[0],
+            SysMemPitch = u32(twidth * 4),
+        }
+
+        texture : ^d11.ITexture2D
+        res = d.device->CreateTexture2D(&texture_desc, &texture_data, &texture)
+        hv_assert(win.SUCCEEDED(res), string("CreateTexture2D failed"))
+
+        d.device->CreateShaderResourceView(texture, nil, &d.atlas_SRV)
+        hv_assert(win.SUCCEEDED(res), string("CreateShaderResourceView failed"))
+
+        texture->Release()
+        stbi.image_free(image_data)
+
+
+        sprite_buffer_desc := d11.BUFFER_DESC {
+            ByteWidth           = MAX_SPRITES * size_of(Sprite),
+            Usage               = .DYNAMIC,
+            BindFlags           = { .SHADER_RESOURCE },
+            CPUAccessFlags      = { .WRITE },
+            MiscFlags           = { .BUFFER_STRUCTURED },
+            StructureByteStride = size_of(Sprite),
+        }
+
+        d.device->CreateBuffer(&sprite_buffer_desc, nil, &d.sprite_buffer)
+
+        sprite_SRV_desc  := d11.SHADER_RESOURCE_VIEW_DESC {
+            Format             = .UNKNOWN,
+            ViewDimension      = .BUFFER,
+        }
+        sprite_SRV_desc.Buffer.NumElements = MAX_SPRITES
+
+        d.device->CreateShaderResourceView(d.sprite_buffer, &sprite_SRV_desc, &d.sprite_SRV);
+
+        sampler_desc := d11.SAMPLER_DESC {
+            AddressU = .CLAMP,
+            AddressV = .CLAMP,
+            AddressW = .CLAMP,
+            ComparisonFunc = .NEVER,
+            Filter = .MIN_MAG_MIP_POINT,
+        }
+
+        d.device->CreateSamplerState(&sampler_desc, &d.sampler)
+        hv_assert(win.SUCCEEDED(res), string("CreateSamplerState failed"))
+
+        log.info("D3D11 initialization complete;")
+    }
+
+    d.constant_data = Constants {
+        screensize = { d.viewport.Width, d.viewport.Height },
+        atlassize =  { atlas.SIZE.x, atlas.SIZE.y },
+    }
+
+
+    constant_buffer_desc := d11.BUFFER_DESC{
+        ByteWidth      = size_of(Constants),
+        Usage          = .IMMUTABLE,
+        BindFlags      = {.CONSTANT_BUFFER},
+        //	CPUAccessFlags = {.WRITE},
+    }
+    //constant_buffer: ^d11.IBuffer
+    constantSRD := d11.SUBRESOURCE_DATA {
+        pSysMem     = &d.constant_data,
+    }
+    d.device->CreateBuffer(&constant_buffer_desc, &constantSRD, &d.constant_buffer)
+
+    return d
+}
+
+start_drawing :: proc() {
+    sb.sprite = make([]Sprite, MAX_SPRITES, context.temp_allocator)
+    sb.size = 0
+}
+
+end_drawing :: proc(using d : ^DxData) {
+    sprite_buffer_MSR : d11.MAPPED_SUBRESOURCE
+
+    dcontext->Map(sprite_buffer, 0, .WRITE_DISCARD, nil, &sprite_buffer_MSR)
+    {
+        mem.copy(sprite_buffer_MSR.pData, raw_data(sb.sprite),
+                 size_of(Sprite) * int(sb.size))
+    }
+
+    dcontext->Unmap(sprite_buffer, 0)
+
+    dcontext->ClearRenderTargetView(framebuffer_rtv, &[4]f32{0, 0.1, 0.3, 1})
+
+    //stride : u32 = 3 * 4
+    //offset := u32(0)
+
+    //dcontext->IASetVertexBuffers(0, 1, &vertex_buffer, &stride, &offset)
+    dcontext->IASetPrimitiveTopology(.TRIANGLELIST)
+
+    dcontext->RSSetState(rstate)
+
+    dcontext->VSSetShader(vertex_shader, nil, 0)
+    dcontext->VSSetShaderResources(0, 1, &sprite_SRV);
+    dcontext->VSSetConstantBuffers(0, 1, &constant_buffer);
+    dcontext->PSSetShader(pixel_shader, nil, 0)
+    dcontext->PSSetShaderResources(1, 1, &atlas_SRV)
+    dcontext->PSSetSamplers(0, 1, &sampler)
+
+    dcontext->DrawInstanced(6, sb.size, 0, 0)
+    swapchain->Present(1, {})
+}
+
+hv_append ::#force_inline proc(sb1 : ^SpriteBatch, sprpos : vec4, atlpos : atlas.Rect, color : vec3) {
+    sb1.sprite[sb1.size].pos =  {sprpos.x, sprpos.y}
+    sb1.sprite[sb1.size].size = {sprpos.z, sprpos.w}
+    sb1.sprite[sb1.size].atlaspos = {atlpos.x, atlpos.y}
+    sb1.sprite[sb1.size].atlas_size = {atlpos.z, atlpos.w}
+    sb1.sprite[sb1.size].color = color
+    sb1.size += 1
+}
+
+draw_text :: proc (pos: vec2, text : string, color : vec3 = HV_WHITE) {
+    startx := pos.x
+    starty := pos.y
+
+    for slovo in text {
+        fnt := atlas.glyphs[0]
+        if slovo == ' ' {
+            startx += 17
+            continue
+        }
+        for glyph in atlas.glyphs {
+            if glyph.value == slovo {
+                fnt = glyph
+                break
+            }
+        }
+
+        if(slovo == '\n') {
+            starty += fnt.rect.y
+            startx =  pos.x
+            continue
+        }
+
+        startx1 := startx + f32(fnt.offset_x)
+        starty1 := starty + f32(fnt.offset_y)
+
+        endx := fnt.rect.z
+        endy := fnt.rect.w
+
+        hv_append(&sb, vec4{startx1, starty1, endx, endy}, fnt.rect, color)
+
+        //__draw(vb, {startx1, starty1, endx, endy}, tex, color)
+
+        startx += f32(fnt.advance_x)
+
+    }
+}
+
+calc_text_len :: proc(text : string) -> u32 {
+    startx : u32 = 0
+
+    for c in text {
+        fnt := atlas.glyphs[0]
+
+        if c == ' ' {
+            startx += 17
+            continue
+        }
+
+        for glyph in atlas.glyphs {
+            if glyph.value == c {
+                fnt = glyph
+                break
+            }
+        }
+
+        startx += u32(fnt.advance_x)
+    }
+    return startx
+}
+
+draw_sprite ::#force_inline proc(tname : atlas.TextureName, pos : vec4, color : vec3 = HV_WHITE) {
+    hv_append(&sb, pos, atlas.textures[tname].rect, color)
+}
+
+draw_sprite_v2 ::#force_inline proc(tname : atlas.TextureName, pos : vec2, color : vec3 = HV_WHITE)  {
+    w := atlas.textures[tname].rect.z
+    h := atlas.textures[tname].rect.w
+    hv_append(&sb, {pos.x, pos.y, w, h}, atlas.textures[tname].rect, color)
+}
+
+draw_rectangle ::#force_inline proc(pos : vec4, color : vec3 = HV_WHITE) {
+    hv_append(&sb, pos, atlas.glyphs[len(atlas.glyphs) - 8].rect, color)
+}
+
+process_keyboard_message :: proc(new_state: ^ButtonState, is_down: bool) {
+    if new_state.ended_down != is_down {
+        new_state.ended_down = is_down
+        new_state.half_transition_count += 1
+    }
+}
+
+was_pressed :: proc(state : ^ButtonState) -> bool {
+	result  : bool = ((state.half_transition_count > 1) ||
+	                 ((state.half_transition_count == 1) &&
+	                  (state.ended_down)))
+	return result
+}
+
+init_p :: proc(p : ^Particle, pos : vec2, range : vec2) {
+
+    for i : i32 = 0; i < i32(len(p.pos)); i += 1 {
+        p.pos[i].x = pos.x
+        p.pos[i].y = pos.y
+
+        angle := rand.float32_range(range.x, range.y)
+
+        r := math.to_radians(angle)
+
+        p.dir[i].x = math.cos(r)
+        p.dir[i].y = math.sin(r)
+    }
+    p.count = 10
+    p.timer = 0
+}
+
+reset :: proc(gs : ^GameState, winsize : vec2) {
+    angle := rand.float32_range(-46, 45)
+    r := math.to_radians(angle)
+
+    gs.ball_dir.x = math.cos(r)
+    gs.ball_dir.y = math.sin(r)
+
+    if rand.float32() < 0.5 {
+        gs.ball_dir.x *= -1
+    }
+
+    gs.ball.x = winsize.x / 2 - gs.ball.z / 2
+    gs.ball.y = winsize.y / 2 - gs.ball.w / 2
+
+    //gs.paddle.z = 30;  gs.ai_paddle.z  = 30
+    //gs.paddle.w = 180; gs.ai_paddle.w = 180
+
+    //gs.ai_paddle.x = winsize.x - 40
+
+    //gs.ball.z = 30
+    //gs.ball.w = 30
+
+    //gs.paddle_speed = 420
+    //gs.ball_dir = vec2{1, 1}
+    //gs.ball_speed = 610
+
+    //gs.paddle.x = 10
+    //gs.paddle.y = winsize.y / 2 - gs.paddle.w / 2
+    //gs.ai_paddle.y = gs.paddle.y
+}
+
+init_game :: proc(using gs : ^GameState, vp : vec2) {
+    paddle.z = 30
+    ai_paddle.z  = 30
+    paddle.w = 180
+    ai_paddle.w = 180
+
+    ai_paddle.x = vp.x - 40
+
+    ball.z = 30
+    ball.w = 30
+
+    paddle_speed = vp.x * 0.5
+    ball_dir = vec2{1, 1}
+    ball_speed = vp.x * 0.7
+
+    paddle.x = 10
+    paddle.y = vp.y / 2 - paddle.w / 2
+    ai_paddle.y = paddle.y
+    ai_reaction_delay = 0.1
+    reset(gs, vp)
+}
+
+check_collision :: proc(rec1, rec2 : vec4) -> b32 {
+    return ((rec1.x < (rec2.x + rec2.z) && (rec1.x + rec1.z) > rec2.x) &&
+            (rec1.y < (rec2.y + rec2.w) && (rec1.y + rec1.w) > rec2.y));
+}
+
+
+ball_dir_calculate :: proc(ball: vec4, paddle: vec4) -> (vec2, bool) {
+    if check_collision(ball, paddle) {
+        ball_center := vec2{ball.x + ball.z / 2, ball.y + ball.w / 2}
+        paddle_center := vec2{paddle.x + paddle.z / 2, paddle.y + paddle.w / 2}
+        return linalg.normalize0(ball_center - paddle_center), true
+    }
+    return {}, false
+}
+
+init_sound :: proc(alloc : runtime.Allocator) -> GSound{
+    gs : GSound
+    log.info("Initializing Xaudio2")
+
+    gs.sfx.volume = 1.0
+    gs.music.volume = 1.0
+
+    res := win.CoInitializeEx(nil, .MULTITHREADED)
+    assert(res == win.S_OK, "CoinitializeEx failed")
+
+    res = xa.Create(&gs.xaudio)
+    assert(res == win.S_OK, "Xaudio2Create failed")
+
+    res = gs.xaudio->CreateMasteringVoice(&gs.sfx.mvoice)
+    assert(res == win.S_OK, "CreateMasteringVoice failed")
+
+    wv := win.WAVEFORMATEX {
+        wFormatTag = win.WAVE_FORMAT_PCM,
+        nChannels = 1, // mono
+        nSamplesPerSec = 44100,
+        wBitsPerSample = 16,
+    }
+    wv.nBlockAlign = wv.nChannels * 2
+    wv.nAvgBytesPerSec = wv.nSamplesPerSec * u32(wv.nChannels) * 2
+
+    //
+    res = gs.xaudio->CreateSourceVoice(&gs.sfx.srcvoice, &wv)
+    assert(res == win.S_OK, "CreateSourceVoice failed")
+
+    res = gs.sfx.srcvoice->SetVolume(gs.sfx.volume)
+    assert(res == win.S_OK, "SetVolume failed")
+
+    // load wav file
+    riff : u32
+    data_offset : u16
+    data_chunk_search : u32
+    data_chunk_size : u32
+
+    file_handle : win.HANDLE = win.INVALID_HANDLE_VALUE
+
+    file_handle = win.CreateFileW(win.L("assets/sfx.wav"), win.GENERIC_READ,
+        win.FILE_SHARE_READ, nil, win.OPEN_EXISTING,
+        win.FILE_ATTRIBUTE_NORMAL, nil)
+
+    hv_assert(file_handle != win.INVALID_HANDLE_VALUE)
+
+    bytes_read : u32 = 0
+    hv_assert(win.ReadFile(file_handle, &riff, size_of(u32), &bytes_read, nil) == true,
+        "ReadFile failed")
+
+
+    if riff != 0x46464952 {
+        log.error("not riff")
+        running = false
+    }
+
+    hv_assert(win.SetFilePointer(file_handle, 20, nil, win.FILE_BEGIN) !=
+        win.INVALID_SET_FILE_POINTER, "SetFileFormat failed")
+
+    //wave_format_read : win.WAVEFORMATEX
+    hv_assert(win.ReadFile(file_handle, &gs.wvf,
+        size_of(win.WAVEFORMATEX), &bytes_read, nil) == true,
+    "ReadFile 2 failed")
+
+    //this is only temporary
+    hv_assert((gs.wvf.nBlockAlign == (gs.wvf.nChannels *
+               gs.wvf.wBitsPerSample) / 8) ||
+               gs.wvf.wFormatTag == win.WAVE_FORMAT_PCM ||
+               gs.wvf.wBitsPerSample == 16,  "Sound Data Type Mismatch")
+
+
+
+
+    win.SetFilePointer(file_handle, i32(36), nil, win.FILE_BEGIN)
+
+    win.ReadFile(file_handle, &data_chunk_search, size_of(u32),
+        &bytes_read, nil)
+
+    hv_assert(data_chunk_search == 0x61746164, "Glup si") // backwards
+
+    win.SetFilePointer(file_handle, i32(40), nil, win.FILE_BEGIN)
+
+    win.ReadFile(file_handle, &data_chunk_size, size_of(u32), &bytes_read, nil)
+
+    gs.data.pAudioData = make([^]u8, data_chunk_size, alloc)
+    gs.data.Flags = { .END_OF_STREAM }
+    gs.data.AudioBytes = data_chunk_size
+
+
+    win.SetFilePointer(file_handle, i32(44), nil, win.FILE_BEGIN)
+
+    win.ReadFile(file_handle, gs.data.pAudioData,
+        data_chunk_size, &bytes_read, nil)
+
+    //0x1ba60dd40dd50000
+    //hv_assert(res != 0, "ReadFile failed")
+    // just use #load
+    //file_data, file_success :=os.read_entire_file("assets/sfx.wav", context.temp_allocator)
+    //if !file_success {
+    //    log.error("File assets/sfx.wav doesn't exist")
+    //    running = false
+    //}
+
+
+
+    //log.info(file_data)
+
+    log.info("Initialized Xaudio2")
+    free_all(context.temp_allocator)
+
+
+    return gs
+}
+
+play_sound :: proc(gsound : ^GSound) {
+    gsound.sfx.srcvoice->SubmitSourceBuffer(&gsound.data)
+    gsound.sfx.srcvoice->Start()
+}
+
+main :: proc() {
+    running = true
+
+    when ODIN_DEBUG {
+        context.logger = log.create_console_logger(log.Level.Debug,
+                        { .Level, .Procedure, .Terminal_Color, .Thread_Id })
+    }
+
+    track: mem.Tracking_Allocator
+    mem.tracking_allocator_init(&track, context.allocator)
+    defer mem.tracking_allocator_destroy(&track)
+    context.allocator = mem.tracking_allocator(&track)
+
+    persistent : v.Arena
+    errf := v.arena_init_static(&persistent)
+    assert(errf == .None, "Arena creation failed")
+    p_allocator := v.arena_allocator(&persistent);
+
+    log.infof("Persistent arena {}GB reserved", persistent.total_reserved / mem.Gigabyte)
+
+    handle := create_window(1280, 720, "Pong")
+
+    //hv_assert(1 == 2, "Couldntstring(")
+    log.info("Initializing d3d11")
+
+    render := init_d3d(handle)
+
+    gsound := init_sound(p_allocator)
+
+    if running {
+        win.ShowWindow(handle, win.SW_SHOW)
+    }
+
+    start_tick := time.tick_now()
+    tick := start_tick
+
+    game : GameState
+    init_game(&game, {render.viewport.Width, render.viewport.Height})
+    //game.score = 0
+
+    old_input : [Buttons]ButtonState
+    new_input : [Buttons]ButtonState
+    anim_hit : f32 = 0.0
+    cpu_anim_hit : f32
+
+    sound_playing := false
+    sound_play_s :f32= 0
+
+    log.info("Entering Main Loop")
+
+    p : Particle
+    p.pos = make([]vec2, 10, p_allocator)
+    p.dir = make([]vec2, 10, p_allocator)
+
+    for running {
+        dt := f32(time.duration_seconds(time.tick_lap_time(&tick)))
+
+
+        for oldi, ind in old_input {
+            new_input[ind].ended_down = oldi.ended_down
+        }
+
+        msg : win.MSG
+        for win.PeekMessageW(&msg, nil, 0, 0, win.PM_REMOVE) {
+            vk_code := msg.wParam
+            switch msg.message {
+                case win.WM_QUIT : running = false;
+                case win.WM_KEYUP :  fallthrough
+                case win.WM_SYSKEYUP : fallthrough
+                case win.WM_SYSKEYDOWN : fallthrough
+                case win.WM_KEYDOWN : {
+                    was_down := ((msg.lParam & (1 << 30)) != 0)
+                    is_down  := ((msg.lParam & (1 << 31)) == 0)
+
+                    if(is_down != was_down) {
+                        switch vk_code {
+                            case 'W' : fallthrough
+                            case win.VK_UP :
+                                process_keyboard_message(&new_input[.Move_Up],
+                                                         is_down)
+                            case 'S' : fallthrough
+                            case win.VK_DOWN :
+                                process_keyboard_message(&new_input[.Move_Down],
+                                                         is_down)
+                        }
+                    }
+
+                }
+                case : {
+                    win.TranslateMessage(&msg)
+                    win.DispatchMessageW(&msg)
+                }
+            }
+        }
+
+        for xindex in 0..<win.XUSER_MAX_COUNT {
+            controller_state : win.XINPUT_STATE
+            if win.XInputGetState(nil, &controller_state) == .SUCCESS {
+                //pad := &controller_state.Gamepad
+            }
+        }
+
+        t1 := time.duration_seconds(time.tick_since(start_tick))
+
+        screen := vec2{render.viewport.Width, render.viewport.Height}
+
+        if new_input[.Move_Up].ended_down  {
+            game.paddle.y -= game.paddle_speed * dt
+        }
+        if new_input[.Move_Down].ended_down {
+            game.paddle.y += game.paddle_speed * dt
+        }
+
+        game.paddle.y = linalg.clamp(game.paddle.y, 0, screen.y - game.paddle.w)
+
+        game.ai_reaction_timer += dt
+        // if the timer is done:
+        if game.ai_reaction_timer >= game.ai_reaction_delay {
+            // reset the timer
+            game.ai_reaction_timer = 0
+            // use ball from last frame for extra delay
+            ball_mid := game.ball.y + game.ball.w / 2
+            // if the ball is heading left
+            if game.ball_dir.x > 0 {
+                // set the target to the ball
+                game.ai_target_y = ball_mid - game.ai_paddle.w / 2
+                // add or subtract 0-20 to add inaccuracy
+                game.ai_target_y += rand.float32_range(-20, 20)
+            } else {
+                // set the target to screen middle
+                game.ai_target_y = screen.y / 2 - game.ai_paddle.w / 2
+            }
+        }
+
+        p.timer += dt
+        if p.timer < 0.4 {
+            for i : i32 = 0; i < i32(len(p.pos)); i += 1 {
+                p.pos[i] += p.dir[i] * 120  * dt
+            }
+        } else {
+            p.count = 0
+        }
+
+        // calculate the distance between paddle and target
+        ai_paddle_mid := game.ai_paddle.y + game.ai_paddle.w / 2
+        target_diff := game.ai_target_y - game.ai_paddle.y
+        // move either paddle_speed distance or less
+        // won't bounce around so much
+        game.ai_paddle.y += linalg.clamp(target_diff, (-game.paddle_speed * 0.65 * dt),
+                                         (game.paddle_speed * 0.65  * dt))
+        // clamp to window_size
+        game.ai_paddle.y = linalg.clamp(game.ai_paddle.y, 0, screen.y - game.ai_paddle.w)
+
+        //game.paddle.y = linalg.clamp(game.paddle.y, 0, screen.y - game.paddle.w)
+
+        //diff := game.ai_paddle.y + game.ai_paddle.w / 2 - game.ball.y + game.ball.w / 2
+        //if diff < 0 {
+        //    game.ai_paddle.y += (game.paddle_speed * 0.5) * dt
+        //} else if diff > 0 {
+        //    game.ai_paddle.y -= (game.paddle_speed * 0.5) * dt
+        //}
+
+        //game.ai_paddle.y = linalg.clamp(game.ai_paddle.y, 0, screen.y - game.ai_paddle.w)
+
+        next_ball_pos := game.ball
+        next_ball_pos.x += f32(game.ball_speed) * game.ball_dir.x * dt
+        next_ball_pos.y += f32(game.ball_speed) * game.ball_dir.y * dt
+
+        if next_ball_pos.y > screen.y - game.ball.w  || next_ball_pos.y < 1 {
+            game.ball_dir.y *= -1
+        }
+
+        cpu_change := false
+
+        if next_ball_pos.x > screen.x - game.ball.z  || next_ball_pos.x < 1 {
+            reset(&game, screen)
+            if next_ball_pos.x > 1 {
+                game.score += 1
+
+            } else  {
+                cpu_change = true
+                game.score_cpu += 1
+            }
+        }
+
+
+        //player_hit := false
+        new_dir, player_hit := ball_dir_calculate(game.ball, game.paddle)
+        if player_hit {
+            game.ball_dir = new_dir
+            game.p_ctimer = time.tick_now()
+            p_y := game.ball.y + (game.ball.w / 2)
+            init_p(&p, {game.paddle.x + game.paddle.z, p_y}, {-90, 90})
+            if !sound_playing {
+                sound_playing = true
+                play_sound(&gsound)
+            }
+        }
+
+        new_dir, player_hit = ball_dir_calculate(game.ball, game.ai_paddle)
+        if player_hit {
+            game.ball_dir = new_dir
+            game.ai_ctimer = time.tick_now()
+            p_y := game.ball.y + (game.ball.w / 2)
+            init_p(&p, {game.ai_paddle.x, p_y}, {90, 270})
+            //play_sound(gsound, source_voice)
+            if !sound_playing {
+                play_sound(&gsound)
+                sound_playing = true
+            }
+        }
+
+
+        game.ball.x += game.ball_speed * game.ball_dir.x * dt
+        game.ball.y += game.ball_speed * game.ball_dir.y * dt
+
+        game.ball.y = linalg.clamp(game.ball.y, 0, screen.y - game.ball.w)
+        game.ball.x = linalg.clamp(game.ball.x, 0, screen.x - game.ball.z)
+
+
+        start_drawing()
+        {
+            for y_line : f32 = 0; y_line < screen.y; y_line += 90 {
+                draw_rectangle({screen.x / 2 - 5, y_line, 10, 80})
+                //draw_rectangle({screen.x / 2 - 5, 150, 10, 80})
+            }
+
+            //this uses temp_allocator??
+            score_str := fmt.tprintf("Player : %d", game.score)
+            score_cpu_str := fmt.tprintf("CPU : %d", game.score_cpu)
+            //defer delete(score_str)
+
+            score_len := calc_text_len(score_str)
+            score_cpu_len := calc_text_len(score_cpu_str)
+
+            draw_rectangle({screen.x / 2 - f32(score_len) - 25, 0, 5, 50})
+            draw_rectangle({screen.x / 2 - f32(score_len) - 25, 50,
+                          f32(score_len + score_cpu_len) + 50, 5})
+
+            draw_rectangle({screen.x / 2 + f32(score_cpu_len) + 20, 0, 5, 50})
+            draw_text(vec2{screen.x / 2 - f32(score_len) - 10, 10},
+                      score_str, HV_GREEN)
+
+            draw_text(vec2{screen.x / 2 + 15, 10}, score_cpu_str, HV_RED)
+
+            //draw_sprite(.Body_Template0, vec4{50, 50, 200, 200},)
+            if f32(time.duration_seconds(time.tick_since(game.p_ctimer))) < 0.2
+            {
+                draw_rectangle(game.paddle, HV_GREEN)
+            } else {
+                draw_rectangle(game.paddle)
+            }
+            if f32(time.duration_seconds(time.tick_since(game.ai_ctimer))) < 0.2
+            {
+                draw_rectangle(game.ai_paddle, HV_RED)
+            } else {
+                draw_rectangle(game.ai_paddle)
+            }
+            draw_rectangle(game.ball, HV_RED)
+
+            for i : u32 = 0; i < p.count; i += 1 {
+                pa := p.pos[i]
+                draw_rectangle({pa.x, pa.y, 4, 4})
+            }
+        }
+        end_drawing(&render)
+
+        sound_play_s += dt
+
+        if(sound_play_s > 0.4) {
+            sound_play_s = 0
+            sound_playing = false
+        }
+
+        old_input, new_input = new_input, old_input
+
+        free_all(context.temp_allocator)
+    }
+
+    gsound.xaudio->Release()
+    win.CoUninitialize()
+    //vertex_buffer->Release()
+    //input_layout->Release()
+    render.sprite_SRV->Release()
+    render.sprite_buffer->Release()
+    render.rstate->Release()
+    render.atlas_SRV->Release()
+    render.sampler->Release()
+
+    render.constant_buffer->Release()
+
+    render.pixel_shader->Release()
+    render.vertex_shader->Release()
+
+    render.swapchain->Release()
+    render.framebuffer_rtv->Release()
+    render.dcontext->Release()
+    render.device->Release()
+
+    v.arena_free_all(&persistent)
+    free_all(context.temp_allocator)
+    for _, value in track.allocation_map {
+        fmt.printf("%v leaked %v bytes", value.location, value.size)
+    }
+    v.arena_destroy(&persistent)
+}
+
+
+// SV_INSTANCEID, SV_VERTEXID
+shaders_hlsl := `
+
+cbuffer constants : register(b0)
+{
+    float2 screensize;
+    float2 atlassize;
+}
+
+struct vout {
+    float4 position : SV_POSITION;
+    float2 uv : UV;
+    float4 color : COLOR;
+};
+
+struct vin {
+    uint vertex_id : SV_VERTEXID;
+    uint inst_id : SV_INSTANCEID;
+};
+
+struct IDK {
+    float2 pos;
+    float2 size;
+};
+
+struct Sprite {
+    IDK sprite;
+    IDK atlas;
+    float3 color;
+};
+
+//copied from https://gist.github.com/d7samurai/8f91f0343c411286373161202c199b5c
+StructuredBuffer<Sprite> spritebuffer : register(t0);
+Texture2D<float4>        atlastexture : register(t1);
+
+SamplerState             pointsampler : register(s0);
+
+vout vs_main(vin input) {
+    vout output;
+
+    Sprite spr = spritebuffer[input.inst_id];
+    IDK sprite = spr.sprite;
+    IDK atlas = spr.atlas;
+    float3 color = spr.color;
+
+    float2 vertices[6]  = {
+        sprite.pos,
+        sprite.pos + float2(sprite.size.x, 0.0),
+        sprite.pos + float2(0.0, sprite.size.y),
+        sprite.pos + float2(0.0, sprite.size.y),
+        sprite.pos + float2(sprite.size.x, 0.0),
+        sprite.pos + sprite.size,
+    };
+    float2 pos = (vertices[input.vertex_id] / screensize) * 2 - 1;
+    pos.y = -pos.y;
+
+    float4 texpos;
+
+    texpos.x = atlas.pos.x / atlassize.x;
+    texpos.y = (atlas.pos.x + atlas.size.x) / atlassize.x;
+    texpos.z = atlas.pos.y / atlassize.y;
+    texpos.w = (atlas.pos.y + atlas.size.y) / atlassize.y;
+
+    float2 uv[6] = {
+        float2(texpos.x, texpos.z),  // top left
+        float2(texpos.y, texpos.z),  // top right
+        float2(texpos.x, texpos.w),  // bottom left
+        float2(texpos.x, texpos.w),  // bottom left
+        float2(texpos.y, texpos.z),  // top right
+        float2(texpos.y, texpos.w)   // bottom right
+    };
+
+
+
+    output.position = float4(pos.x, pos.y, 0, 1);
+  //  output.color = float4(colors[vertex_ID], 1.0f);
+    output.uv = uv[input.vertex_id];
+    output.color = float4(color, 1.0f);
+    return output;
+}
+float4 ps_main(vout input) : SV_TARGET {
+    float4 color = atlastexture.Sample(pointsampler, input.uv);
+    if (color.a == 0) discard;
+    return color * input.color;
+}`
