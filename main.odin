@@ -38,37 +38,6 @@ vec2 :: [2]f32
 vec3 :: [3]f32
 vec4 :: [4]f32
 
-MAX_SPRITES :: 8192
-
-Sprite :: struct {
-    pos : vec2,
-    size : vec2,
-    atlaspos : vec2,
-    atlas_size : vec2,
-    color : vec3,
-}
-
-Constants :: struct #align(16) {
-    screensize : vec2,
-    atlassize  : vec2,
-}
-
-SpriteBatch :: struct {
-    sprite : []Sprite,
-    size : u32,
-}
-
-ButtonState :: struct {
-    half_transition_count: int,
-    ended_down: bool,
-}
-
-Buttons :: enum {
-    Move_Up,
-    Move_Down,
-    Start,
-    Back,
-}
 
 XSound :: struct {
     mvoice : ^xa.IXAudio2MasteringVoice,
@@ -84,22 +53,6 @@ GSound :: struct {
     music : XSound,
 }
 
-GameState :: struct {
-    paddle : vec4,
-    ai_paddle : vec4,
-    ball : vec4,
-    ball_dir : vec2,
-    ball_speed : f32,
-    paddle_speed : f32,
-    score: u32,
-    score_cpu : u32,
-    ai_target_y: f32,
-    ai_reaction_delay: f32,
-    ai_reaction_timer: f32,
-    ai_ctimer, p_ctimer : time.Tick,
-}
-
-
 DxData :: struct {
     device : ^d11.IDevice,
     dcontext: ^d11.IDeviceContext,
@@ -113,26 +66,13 @@ DxData :: struct {
     rstate : ^d11.IRasterizerState,
     atlas_SRV : ^d11.IShaderResourceView,
     sampler : ^d11.ISamplerState,
-    constant_data : Constants,
+    constant_data : g.Constants,
     constant_buffer : ^d11.IBuffer,
-}
-
-
-Particle :: struct {
-    pos : []vec2,
-    dir : []vec2,
-    timer : f32,
-    count : u32,
 }
 
 /*===============================================================================
                                         GLOBALS
   ===============================================================================*/
-HV_WHITE :: vec3{1, 1, 1}
-HV_RED   :: vec3{1.0, 0.1, 0.1}
-HV_GREEN :: vec3{0.2, 0.8, 0.4}
-HV_BLUE  :: vec3{0, 0, 1}
-HV_BLACK :: vec3{0, 0, 0}
 
 running := false
 sb : ^g.SpriteBatch
@@ -314,7 +254,7 @@ compile_shader :: proc(entrypoint, shader_model : cstring,
     return hr
 }
 
-init_d3d :: proc(handle : win.HWND) -> DxData{
+init_d3d :: proc(handle : win.HWND) -> DxData {
     d : DxData
     {
         feature_levels := [?]d11.FEATURE_LEVEL{._11_0}
@@ -545,7 +485,7 @@ init_d3d :: proc(handle : win.HWND) -> DxData{
 
 
         sprite_buffer_desc := d11.BUFFER_DESC {
-            ByteWidth           = MAX_SPRITES * size_of(Sprite),
+            ByteWidth           = g.MAX_SPRITES * size_of(g.Sprite),
             Usage               = .DYNAMIC,
             BindFlags           = { .SHADER_RESOURCE },
             CPUAccessFlags      = { .WRITE },
@@ -577,14 +517,14 @@ init_d3d :: proc(handle : win.HWND) -> DxData{
         log.info("D3D11 initialization complete;")
     }
 
-    d.constant_data = Constants {
+    d.constant_data = g.Constants {
         screensize = { d.viewport.Width, d.viewport.Height },
         atlassize =  { atlas.SIZE.x, atlas.SIZE.y },
     }
 
 
     constant_buffer_desc := d11.BUFFER_DESC{
-        ByteWidth      = size_of(Constants),
+        ByteWidth      = size_of(g.Constants),
         Usage          = .IMMUTABLE,
         BindFlags      = {.CONSTANT_BUFFER},
         //	CPUAccessFlags = {.WRITE},
@@ -793,14 +733,10 @@ main :: proc() {
     gstate : g.GameState
     gstate.screen = vec2{render.viewport.Width, render.viewport.Height}
     g.init_game(&gstate)
-    //game.score = 0
 
     old_input : [g.Buttons]g.ButtonState
-    //new_input : [Buttons]ButtonState
-    anim_hit : f32 = 0.0
-    cpu_anim_hit : f32
 
-    gstate.sound_playing := false
+    gstate.sound_playing = false
     sound_play_s :f32= 0
     gstate.play_sound = play_sound
 
@@ -811,7 +747,7 @@ main :: proc() {
     gstate.p.dir = make([]vec2, 10, p_allocator)
 
     for running {
-        gstate.dt := f32(time.duration_seconds(time.tick_lap_time(&tick)))
+        gstate.dt = f32(time.duration_seconds(time.tick_lap_time(&tick)))
 
 
         for oldi, ind in old_input {
@@ -857,18 +793,18 @@ main :: proc() {
                 //pad := &controller_state.Gamepad
             }
         }
-        sb = &gstate.sb
+        sb = &g.sb
         start_drawing()
 
         g.update(&gstate)
 
         end_drawing(&render)
 
-        sound_play_s += dt
+        sound_play_s += gstate.dt
 
         if(sound_play_s > 0.4) {
             sound_play_s = 0
-            sound_playing = false
+            gstate.sound_playing = false
         }
 
         old_input, gstate.new_input = gstate.new_input, old_input

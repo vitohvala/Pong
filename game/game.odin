@@ -15,12 +15,22 @@ vec3 :: [3]f32
 vec4 :: [4]f32
 MAX_SPRITES :: 8192
 
-Sprite :: struct #align(16) {
-    pos : vec2,
-    size : vec2,
-    atlaspos : vec2,
-    atlas_size : vec2,
-    color : vec3,
+when ODIN_OS == .Windows {
+	Sprite :: struct {
+        pos : vec2,
+        size : vec2,
+        atlaspos : vec2,
+        atlas_size : vec2,
+        color : vec3,
+    }
+} else {
+    Sprite :: struct #align(16) {
+        pos : vec2,
+        size : vec2,
+        atlaspos : vec2,
+        atlas_size : vec2,
+        color : vec3,
+    }
 }
 
 Constants :: struct #align(16) {
