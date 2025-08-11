@@ -51,28 +51,28 @@ foreign import glx "system:GL"
 @(default_calling_convention="c", link_prefix="glX")
 
 foreign glx {
-    ChooseVisual :: proc(dpy : ^Display, screen: int, attribList: ^int) -> ^XVisualInfo ---
+    ChooseVisual :: proc(dpy : ^Display, screen: i32, attribList: ^i32) -> ^XVisualInfo ---
     CreateContext :: proc(dpy: ^Display, vis: ^XVisualInfo, shareList : GLXContext, direct: bool) -> GLXContext ---
     DestroyContext :: proc(dpy : ^Display, ctx: GLXContext) ---
     MakeCurrent :: proc(dpy: ^Display, drawable: GLXDrawable, ctx : GLXContext) -> bool ---
-    CopyContext :: proc(dpy: ^Display, src, dst: GLXContext, mask: uint) ---
+    CopyContext :: proc(dpy: ^Display, src, dst: GLXContext, mask: u32) ---
     SwapBuffers :: proc(dpy: ^Display, drawable: GLXDrawable) ---
     CreateGLXPixmap :: proc(dpy: ^Display, visual: ^XVisualInfo, pixmap: Pixmap ) -> GLXPixmap ---
     DestroyGLXPixmap :: proc(dpy: ^Display, pixmap: GLXPixmap) ---
     QueryExtension :: proc(dpy: ^Display, errorb, event: ^i32) -> bool ---
     QueryVersion :: proc(dpy: ^Display, maj,min: ^int ) -> bool ---
     IsDirect :: proc(dpy: ^Display, ctx: GLXContext) -> bool ---
-    GetConfig :: proc(dpy: ^Display, visual: XVisualInfo, attrib: int, value: ^int) -> int ---
+    GetConfig :: proc(dpy: ^Display, visual: XVisualInfo, attrib: i32, value: ^i32) -> i32 ---
     GetCurrentContext :: proc() -> GLXContext ---
     GetCurrentDrawable :: proc() -> GLXDrawable ---
     WaitGL :: proc() ---
     WaitX :: proc() ---
-    UseXFont :: proc(font: Font, first, count, list: int) ---
+    UseXFont :: proc(font: Font, first, count, list: i32) ---
 
     /* GLX 1.1 and later */
     QueryExtensionsString :: proc(dpy: ^Display, screen: i32) -> cstring ---
-    QueryServerString :: proc(dpy: ^Display, screen, name: int) -> cstring ---
-    XGetClientString :: proc(dpy: ^Display, name: int) -> cstring ---
+    QueryServerString :: proc(dpy: ^Display, screen, name: i32) -> cstring ---
+    XGetClientString :: proc(dpy: ^Display, name: i32) -> cstring ---
 
 
     /* GLX 1.2 and later */
@@ -81,22 +81,22 @@ foreign glx {
 
     /* GLX 1.3 and later */
     ChooseFBConfig :: proc(dpy: ^Display, screen: i32, attribList, nitems: ^i32) -> ^GLXFBConfig ---
-    GetFBConfigAttrib :: proc(dpy: ^Display, config: GLXFBConfig, attribute: i32, value: ^i32) -> int ---
-    GetFBConfigs :: proc(dpy, screen: int, nelements: int) -> ^GLXFBConfig ---
+    GetFBConfigAttrib :: proc(dpy: ^Display, config: GLXFBConfig, attribute: i32, value: ^i32) -> i32 ---
+    GetFBConfigs :: proc(dpy, screen: i32, nelements: i32) -> ^GLXFBConfig ---
     GetVisualFromFBConfig :: proc(dpy: ^Display, config: GLXFBConfig) -> ^XVisualInfo ---
-    CreateWindow :: proc(dpy: ^Display, config: GLXFBConfig, win: Window, attribList: ^int) -> GLXWindow ---
+    CreateWindow :: proc(dpy: ^Display, config: GLXFBConfig, win: Window, attribList: ^i32) -> GLXWindow ---
     DestroyWindow :: proc(dpy: ^Display, window: GLXWindow) ---
-    CreatePixmap :: proc(dpy: ^Display, config: GLXFBConfig, pixmap: Pixmap, attribList: ^int) -> GLXPixmap ---
+    CreatePixmap :: proc(dpy: ^Display, config: GLXFBConfig, pixmap: Pixmap, attribList: ^i32) -> GLXPixmap ---
     DestroyPixmap :: proc(dpy: ^Display, pixmap: GLXPixmap) ---
-    CreatePbuffer :: proc(dpy: ^Display, config: GLXFBConfig, attribList: ^int) -> GLXPbuffer ---
+    CreatePbuffer :: proc(dpy: ^Display, config: GLXFBConfig, attribList: ^i32) -> GLXPbuffer ---
     DestroyPbuffer :: proc(dpy: ^Display, pbuf: GLXPbuffer) ---
-    QueryDrawable :: proc(dpy: ^Display, draw: GLXDrawable, attribute: int, value: ^int) ---
-    CreateNewContext :: proc(dpy: ^Display, config: GLXFBConfig, renderType: int, shareList: GLXContext, direct: bool) -> GLXContext ---
+    QueryDrawable :: proc(dpy: ^Display, draw: GLXDrawable, attribute: i32, value: ^i32) ---
+    CreateNewContext :: proc(dpy: ^Display, config: GLXFBConfig, renderType: i32, shareList: GLXContext, direct: bool) -> GLXContext ---
     MakeContextCurrent :: proc(dpy: ^Display, draw, read: GLXDrawable, ctx: GLXContext) -> bool ---
     GetCurrentReadDrawable :: proc() -> GLXDrawable ---
-    QueryContext :: proc(dpy: ^Display, ctx: GLXContext, attribute: int, value: ^int) -> int ---
-    SelectEvent :: proc(dpy: ^Display, drawable: GLXDrawable, mask: uint) ---
-    GetSelectedEvent :: proc(dpy: ^Display, drawable: GLXDrawable, mask: ^uint ) ---
+    QueryContext :: proc(dpy: ^Display, ctx: GLXContext, attribute: i32, value: ^i32) -> i32 ---
+    SelectEvent :: proc(dpy: ^Display, drawable: GLXDrawable, mask: u32) ---
+    GetSelectedEvent :: proc(dpy: ^Display, drawable: GLXDrawable, mask: ^u32 ) ---
     GetProcAddress :: proc "c" (procName: cstring) -> __GLXextFuncPtr ---
     GetProcAddressARB :: proc "c"(procName: cstring) -> __GLXextFuncPtr ---
 }
@@ -239,7 +239,7 @@ GLX_BufferSwapComplete	  :: 1
 __GLX_NUMBER_EVENTS ::  17
 
 /* GLX 1.3 function pointer typedefs
-typedef GLXFBConfig * (* PFNGLXGETFBCONFIGSPROC) (Display *dpy, int screen, int *nelements);
+typedef GLXFBConfig * (* PFNGLXGETFBCONFIGSPROC) (Display *dpy, i32 screen, int *nelements);
 typedef GLXFBConfig * (* PFNGLXCHOOSEFBCONFIGPROC) (Display *dpy, int screen, const int *attrib_list, int *nelements);
 typedef int (* PFNGLXGETFBCONFIGATTRIBPROC) (Display *dpy, GLXFBConfig config, int attribute, int *value);
 typedef XVisualInfo * (* PFNGLXGETVISUALFROMFBCONFIGPROC) (Display *dpy, GLXFBConfig config);
@@ -436,26 +436,26 @@ GetSwapIntervalMESA: PFNGLXGETSWAPINTERVALMESAPROC
 ** GLX Events
 */
 GLXPbufferClobberEvent :: struct {
-    event_type : int,		/* GLX_DAMAGED or GLX_SAVED */
-    draw_type: int,	/* GLX_WINDOW or GLX_PBUFFER */
+    event_type : i32,		/* GLX_DAMAGED or GLX_SAVED */
+    draw_type: i32,	/* GLX_WINDOW or GLX_PBUFFER */
     serial: uint,	/* # of last request processed by server */
     send_event: bool,		/* true if this came for SendEvent request */
     display: ^Display,		/* display the event was read from */
     drawable: GLXDrawable, 	/* XID of Drawable */
-    buffer_mask: uint,	/* mask indicating which buffers are affected */
-    aux_buffer: uint,	/* which aux buffer was affected */
-    x, y : int,
-    width, height : int,
-    count: int,			/* if nonzero, at least this many more */
+    buffer_mask: u32,	/* mask indicating which buffers are affected */
+    aux_buffer: u32,	/* which aux buffer was affected */
+    x, y : i32,
+    width, height : i32,
+    count: i32,			/* if nonzero, at least this many more */
 }
 
 GLXBufferSwapComplete :: struct {
-    type: int,
+    type: i32,
     serial: uint,	/* # of last request processed by server */
     send_event: bool,		/* true if this came from a SendEvent request */
     display: ^Display,		/* Display the event was read from */
     drawable: Drawable,	/* drawable on which event was requested in event mask */
-    event_type: int,
+    event_type: i32,
     ust : i64,
     msc : i64,
     sbc : i64,

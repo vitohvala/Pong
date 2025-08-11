@@ -12,6 +12,8 @@ import "core:time"
 import v "core:mem/virtual"
 import "core:math/linalg"
 import stbi "vendor:stb/image"
+import ma "vendor:miniaudio"
+
 
 import g "game"
 
@@ -19,9 +21,15 @@ vec2 :: g.vec2
 vec3 :: g.vec3
 vec4 :: g.vec4
 
+AUDIO_FILE :: #load("./assets/sfx.wav")
+
 //sb : SpriteBatch
 running := false
 gstate : g.GameState
+gsound: ma.sound
+
+
+
 
 
 set_size_hints :: proc(display : ^x.Display, window : x.Window,
@@ -360,6 +368,69 @@ main :: proc() {
     gstate.p.pos = make([]vec2, 10, p_allocator)
     gstate.p.dir = make([]vec2, 10, p_allocator)
 
+    engine: ma.engine
+    // We will use the decoder to create a sound
+    // NOTE: Keep your decoder alive for the life of your sound object
+    decoder: ma.decoder
+    // The sound we will play
+
+    engine_config := ma.engine_config_init()
+    engine_config.channels = 0
+    engine_config.sampleRate = 0
+    engine_config.listenerCount = 1
+
+    engine_init_result := ma.engine_init(&engine_config, &engine)
+    if engine_init_result != .SUCCESS {
+        fmt.panicf("failed to init miniaudio engine: %v", engine_init_result)
+    }
+    engine_start_result := ma.engine_start(&engine)
+    if engine_start_result != .SUCCESS {
+        fmt.panicf("failed to start miniaudio engine: %v", engine_start_result)
+    }
+
+    // Configure our decoder
+    decoder_config := ma.decoder_config_init(
+        outputFormat = .f32,
+        outputChannels = 0,
+        outputSampleRate = 0,
+    )
+    // This example uses a WAV file
+    // Form the docs:
+    // When loading a decoder, miniaudio uses a trial and error technique to find the appropriate decoding backend. This can be unnecessarily inefficient if the type is already known. In this case you can use encodingFormat variable in the device config to specify a specific encoding format you want to decode:
+    decoder_config.encodingFormat = .wav
+
+    // Initialize a decoder from memory, decoding our `#load`-ed audio file
+    decoder_result := ma.decoder_init_memory(
+        pData = raw_data(AUDIO_FILE),
+        dataSize = len(AUDIO_FILE),
+        pConfig = &decoder_config,
+        pDecoder = &decoder,
+    )
+    if decoder_result != .SUCCESS {
+        fmt.eprintf("failed to init decoder: %v", decoder_result)
+    }
+
+    // A `decoder` is a `data_source` thus we can init a sound from it
+    sound_result := ma.sound_init_from_data_source(
+        pEngine = &engine,
+        // Pass the decoders data_source
+        pDataSource = decoder.ds.pCurrent,
+        flags = {},
+        pGroup = nil,
+        pSound = &gsound,
+    )
+    if sound_result != .SUCCESS {
+        fmt.panicf("failed to init sound file from memory: %v", sound_result)
+    }
+
+    play_sound :: proc() {
+        ma.sound_start(&gsound)
+    }
+
+    gstate.play_sound = play_sound
+
+    sound_play_s : f32 = 0
+
     for running {
         gstate.dt = f32(time.duration_seconds(time.tick_lap_time(&tick)))
 
@@ -426,6 +497,12 @@ main :: proc() {
         gl.DrawArraysInstanced(gl.TRIANGLES, 0, 6, i32(g.sb.size));
 
         glx.SwapBuffers(display, window)
+
+        sound_play_s += gstate.dt
+        if sound_play_s > 0.4 {
+            sound_play_s = 0
+            gstate.sound_playing = false
+        }
 
         free_all(context.temp_allocator)
         old_input, gstate.new_input = gstate.new_input, old_input
