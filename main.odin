@@ -28,6 +28,8 @@ import stbi "vendor:stb/image" //remove this
 
 import atlas "atlas"
 
+import g "game"
+
 /*===============================================================================
                                         STRUCTS
   ===============================================================================*/
@@ -133,7 +135,8 @@ HV_BLUE  :: vec3{0, 0, 1}
 HV_BLACK :: vec3{0, 0, 0}
 
 running := false
-sb : SpriteBatch
+sb : ^g.SpriteBatch
+gsound : GSound
 
 /*===============================================================================
                                       PROCEDURES
@@ -313,22 +316,6 @@ compile_shader :: proc(entrypoint, shader_model : cstring,
 
 init_d3d :: proc(handle : win.HWND) -> DxData{
     d : DxData
-    //device : ^d11.IDevice
-    //dcontext: ^d11.IDeviceContext
-    //framebuffer_rtv: ^d11.IRenderTargetView
-    //swapchain4 : ^dxgi.ISwapChain4
-    ////do i need the viewport really
-    //viewport : d11.VIEWPORT
-    //vertex_shader : ^d11.IVertexShader
-    //pixel_shader :  ^d11.IPixelShader
-    ////input_layout :  ^d11.IInputLayout
-    ////vertex_buffer : ^d11.IBuffer
-    //sprite_SRV : ^d11.IShaderResourceView
-    //sprite_buffer : ^d11.IBuffer
-    //rstate : ^d11.IRasterizerState
-    //atlas_SRV : ^d11.IShaderResourceView
-    //sampler : ^d11.ISamplerState
-
     {
         feature_levels := [?]d11.FEATURE_LEVEL{._11_0}
 
@@ -563,7 +550,7 @@ init_d3d :: proc(handle : win.HWND) -> DxData{
             BindFlags           = { .SHADER_RESOURCE },
             CPUAccessFlags      = { .WRITE },
             MiscFlags           = { .BUFFER_STRUCTURED },
-            StructureByteStride = size_of(Sprite),
+            StructureByteStride = size_of(g.Sprite),
         }
 
         d.device->CreateBuffer(&sprite_buffer_desc, nil, &d.sprite_buffer)
@@ -572,7 +559,7 @@ init_d3d :: proc(handle : win.HWND) -> DxData{
             Format             = .UNKNOWN,
             ViewDimension      = .BUFFER,
         }
-        sprite_SRV_desc.Buffer.NumElements = MAX_SPRITES
+        sprite_SRV_desc.Buffer.NumElements = g.MAX_SPRITES
 
         d.device->CreateShaderResourceView(d.sprite_buffer, &sprite_SRV_desc, &d.sprite_SRV);
 
@@ -612,7 +599,7 @@ init_d3d :: proc(handle : win.HWND) -> DxData{
 }
 
 start_drawing :: proc() {
-    sb.sprite = make([]Sprite, MAX_SPRITES, context.temp_allocator)
+    sb.sprite = make([]g.Sprite, g.MAX_SPRITES, context.temp_allocator)
     sb.size = 0
 }
 
@@ -622,7 +609,7 @@ end_drawing :: proc(using d : ^DxData) {
     dcontext->Map(sprite_buffer, 0, .WRITE_DISCARD, nil, &sprite_buffer_MSR)
     {
         mem.copy(sprite_buffer_MSR.pData, raw_data(sb.sprite),
-                 size_of(Sprite) * int(sb.size))
+                 size_of(g.Sprite) * int(sb.size))
     }
 
     dcontext->Unmap(sprite_buffer, 0)
@@ -646,189 +633,6 @@ end_drawing :: proc(using d : ^DxData) {
 
     dcontext->DrawInstanced(6, sb.size, 0, 0)
     swapchain->Present(1, {})
-}
-
-hv_append ::#force_inline proc(sb1 : ^SpriteBatch, sprpos : vec4, atlpos : atlas.Rect, color : vec3) {
-    sb1.sprite[sb1.size].pos =  {sprpos.x, sprpos.y}
-    sb1.sprite[sb1.size].size = {sprpos.z, sprpos.w}
-    sb1.sprite[sb1.size].atlaspos = {atlpos.x, atlpos.y}
-    sb1.sprite[sb1.size].atlas_size = {atlpos.z, atlpos.w}
-    sb1.sprite[sb1.size].color = color
-    sb1.size += 1
-}
-
-draw_text :: proc (pos: vec2, text : string, color : vec3 = HV_WHITE) {
-    startx := pos.x
-    starty := pos.y
-
-    for slovo in text {
-        fnt := atlas.glyphs[0]
-        if slovo == ' ' {
-            startx += 17
-            continue
-        }
-        for glyph in atlas.glyphs {
-            if glyph.value == slovo {
-                fnt = glyph
-                break
-            }
-        }
-
-        if(slovo == '\n') {
-            starty += fnt.rect.y
-            startx =  pos.x
-            continue
-        }
-
-        startx1 := startx + f32(fnt.offset_x)
-        starty1 := starty + f32(fnt.offset_y)
-
-        endx := fnt.rect.z
-        endy := fnt.rect.w
-
-        hv_append(&sb, vec4{startx1, starty1, endx, endy}, fnt.rect, color)
-
-        //__draw(vb, {startx1, starty1, endx, endy}, tex, color)
-
-        startx += f32(fnt.advance_x)
-
-    }
-}
-
-calc_text_len :: proc(text : string) -> u32 {
-    startx : u32 = 0
-
-    for c in text {
-        fnt := atlas.glyphs[0]
-
-        if c == ' ' {
-            startx += 17
-            continue
-        }
-
-        for glyph in atlas.glyphs {
-            if glyph.value == c {
-                fnt = glyph
-                break
-            }
-        }
-
-        startx += u32(fnt.advance_x)
-    }
-    return startx
-}
-
-draw_sprite ::#force_inline proc(tname : atlas.TextureName, pos : vec4, color : vec3 = HV_WHITE) {
-    hv_append(&sb, pos, atlas.textures[tname].rect, color)
-}
-
-draw_sprite_v2 ::#force_inline proc(tname : atlas.TextureName, pos : vec2, color : vec3 = HV_WHITE)  {
-    w := atlas.textures[tname].rect.z
-    h := atlas.textures[tname].rect.w
-    hv_append(&sb, {pos.x, pos.y, w, h}, atlas.textures[tname].rect, color)
-}
-
-draw_rectangle ::#force_inline proc(pos : vec4, color : vec3 = HV_WHITE) {
-    hv_append(&sb, pos, atlas.glyphs[len(atlas.glyphs) - 8].rect, color)
-}
-
-process_keyboard_message :: proc(new_state: ^ButtonState, is_down: bool) {
-    if new_state.ended_down != is_down {
-        new_state.ended_down = is_down
-        new_state.half_transition_count += 1
-    }
-}
-
-was_pressed :: proc(state : ^ButtonState) -> bool {
-	result  : bool = ((state.half_transition_count > 1) ||
-	                 ((state.half_transition_count == 1) &&
-	                  (state.ended_down)))
-	return result
-}
-
-init_p :: proc(p : ^Particle, pos : vec2, range : vec2) {
-
-    for i : i32 = 0; i < i32(len(p.pos)); i += 1 {
-        p.pos[i].x = pos.x
-        p.pos[i].y = pos.y
-
-        angle := rand.float32_range(range.x, range.y)
-
-        r := math.to_radians(angle)
-
-        p.dir[i].x = math.cos(r)
-        p.dir[i].y = math.sin(r)
-    }
-    p.count = 10
-    p.timer = 0
-}
-
-reset :: proc(gs : ^GameState, winsize : vec2) {
-    angle := rand.float32_range(-46, 45)
-    r := math.to_radians(angle)
-
-    gs.ball_dir.x = math.cos(r)
-    gs.ball_dir.y = math.sin(r)
-
-    if rand.float32() < 0.5 {
-        gs.ball_dir.x *= -1
-    }
-
-    gs.ball.x = winsize.x / 2 - gs.ball.z / 2
-    gs.ball.y = winsize.y / 2 - gs.ball.w / 2
-
-    //gs.paddle.z = 30;  gs.ai_paddle.z  = 30
-    //gs.paddle.w = 180; gs.ai_paddle.w = 180
-
-    //gs.ai_paddle.x = winsize.x - 40
-
-    //gs.ball.z = 30
-    //gs.ball.w = 30
-
-    //gs.paddle_speed = 420
-    //gs.ball_dir = vec2{1, 1}
-    //gs.ball_speed = 610
-
-    //gs.paddle.x = 10
-    //gs.paddle.y = winsize.y / 2 - gs.paddle.w / 2
-    //gs.ai_paddle.y = gs.paddle.y
-}
-
-init_game :: proc(using gs : ^GameState, vp : vec2) {
-    paddle.z = 30
-    ai_paddle.z  = 30
-    paddle.w = 180
-    ai_paddle.w = 180
-
-    ai_paddle.x = vp.x - 40
-
-    ball.z = 30
-    ball.w = 30
-
-    paddle_speed = vp.x * 0.5
-    ball_dir = vec2{1, 1}
-    ball_speed = vp.x * 0.7
-
-    paddle.x = 10
-    paddle.y = vp.y / 2 - paddle.w / 2
-    ai_paddle.y = paddle.y
-    ai_reaction_delay = 0.1
-    reset(gs, vp)
-}
-
-check_collision :: proc(rec1, rec2 : vec4) -> b32 {
-    return ((rec1.x < (rec2.x + rec2.z) && (rec1.x + rec1.z) > rec2.x) &&
-            (rec1.y < (rec2.y + rec2.w) && (rec1.y + rec1.w) > rec2.y));
-}
-
-
-ball_dir_calculate :: proc(ball: vec4, paddle: vec4) -> (vec2, bool) {
-    if check_collision(ball, paddle) {
-        ball_center := vec2{ball.x + ball.z / 2, ball.y + ball.w / 2}
-        paddle_center := vec2{paddle.x + paddle.z / 2, paddle.y + paddle.w / 2}
-        return linalg.normalize0(ball_center - paddle_center), true
-    }
-    return {}, false
 }
 
 init_sound :: proc(alloc : runtime.Allocator) -> GSound{
@@ -945,7 +749,7 @@ init_sound :: proc(alloc : runtime.Allocator) -> GSound{
     return gs
 }
 
-play_sound :: proc(gsound : ^GSound) {
+play_sound :: proc() {
     gsound.sfx.srcvoice->SubmitSourceBuffer(&gsound.data)
     gsound.sfx.srcvoice->Start()
 }
@@ -977,7 +781,7 @@ main :: proc() {
 
     render := init_d3d(handle)
 
-    gsound := init_sound(p_allocator)
+    gsound = init_sound(p_allocator)
 
     if running {
         win.ShowWindow(handle, win.SW_SHOW)
@@ -986,30 +790,32 @@ main :: proc() {
     start_tick := time.tick_now()
     tick := start_tick
 
-    game : GameState
-    init_game(&game, {render.viewport.Width, render.viewport.Height})
+    gstate : g.GameState
+    gstate.screen = vec2{render.viewport.Width, render.viewport.Height}
+    g.init_game(&gstate)
     //game.score = 0
 
-    old_input : [Buttons]ButtonState
-    new_input : [Buttons]ButtonState
+    old_input : [g.Buttons]g.ButtonState
+    //new_input : [Buttons]ButtonState
     anim_hit : f32 = 0.0
     cpu_anim_hit : f32
 
-    sound_playing := false
+    gstate.sound_playing := false
     sound_play_s :f32= 0
+    gstate.play_sound = play_sound
 
     log.info("Entering Main Loop")
 
-    p : Particle
-    p.pos = make([]vec2, 10, p_allocator)
-    p.dir = make([]vec2, 10, p_allocator)
+    //p : Particle
+    gstate.p.pos = make([]vec2, 10, p_allocator)
+    gstate.p.dir = make([]vec2, 10, p_allocator)
 
     for running {
-        dt := f32(time.duration_seconds(time.tick_lap_time(&tick)))
+        gstate.dt := f32(time.duration_seconds(time.tick_lap_time(&tick)))
 
 
         for oldi, ind in old_input {
-            new_input[ind].ended_down = oldi.ended_down
+            gstate.new_input[ind].ended_down = oldi.ended_down
         }
 
         msg : win.MSG
@@ -1028,11 +834,11 @@ main :: proc() {
                         switch vk_code {
                             case 'W' : fallthrough
                             case win.VK_UP :
-                                process_keyboard_message(&new_input[.Move_Up],
+                                g.process_keyboard_message(&gstate.new_input[.Move_Up],
                                                          is_down)
                             case 'S' : fallthrough
                             case win.VK_DOWN :
-                                process_keyboard_message(&new_input[.Move_Down],
+                                g.process_keyboard_message(&gstate.new_input[.Move_Down],
                                                          is_down)
                         }
                     }
@@ -1051,170 +857,11 @@ main :: proc() {
                 //pad := &controller_state.Gamepad
             }
         }
-
-        t1 := time.duration_seconds(time.tick_since(start_tick))
-
-        screen := vec2{render.viewport.Width, render.viewport.Height}
-
-        if new_input[.Move_Up].ended_down  {
-            game.paddle.y -= game.paddle_speed * dt
-        }
-        if new_input[.Move_Down].ended_down {
-            game.paddle.y += game.paddle_speed * dt
-        }
-
-        game.paddle.y = linalg.clamp(game.paddle.y, 0, screen.y - game.paddle.w)
-
-        game.ai_reaction_timer += dt
-        // if the timer is done:
-        if game.ai_reaction_timer >= game.ai_reaction_delay {
-            // reset the timer
-            game.ai_reaction_timer = 0
-            // use ball from last frame for extra delay
-            ball_mid := game.ball.y + game.ball.w / 2
-            // if the ball is heading left
-            if game.ball_dir.x > 0 {
-                // set the target to the ball
-                game.ai_target_y = ball_mid - game.ai_paddle.w / 2
-                // add or subtract 0-20 to add inaccuracy
-                game.ai_target_y += rand.float32_range(-20, 20)
-            } else {
-                // set the target to screen middle
-                game.ai_target_y = screen.y / 2 - game.ai_paddle.w / 2
-            }
-        }
-
-        p.timer += dt
-        if p.timer < 0.4 {
-            for i : i32 = 0; i < i32(len(p.pos)); i += 1 {
-                p.pos[i] += p.dir[i] * 120  * dt
-            }
-        } else {
-            p.count = 0
-        }
-
-        // calculate the distance between paddle and target
-        ai_paddle_mid := game.ai_paddle.y + game.ai_paddle.w / 2
-        target_diff := game.ai_target_y - game.ai_paddle.y
-        // move either paddle_speed distance or less
-        // won't bounce around so much
-        game.ai_paddle.y += linalg.clamp(target_diff, (-game.paddle_speed * 0.65 * dt),
-                                         (game.paddle_speed * 0.65  * dt))
-        // clamp to window_size
-        game.ai_paddle.y = linalg.clamp(game.ai_paddle.y, 0, screen.y - game.ai_paddle.w)
-
-        //game.paddle.y = linalg.clamp(game.paddle.y, 0, screen.y - game.paddle.w)
-
-        //diff := game.ai_paddle.y + game.ai_paddle.w / 2 - game.ball.y + game.ball.w / 2
-        //if diff < 0 {
-        //    game.ai_paddle.y += (game.paddle_speed * 0.5) * dt
-        //} else if diff > 0 {
-        //    game.ai_paddle.y -= (game.paddle_speed * 0.5) * dt
-        //}
-
-        //game.ai_paddle.y = linalg.clamp(game.ai_paddle.y, 0, screen.y - game.ai_paddle.w)
-
-        next_ball_pos := game.ball
-        next_ball_pos.x += f32(game.ball_speed) * game.ball_dir.x * dt
-        next_ball_pos.y += f32(game.ball_speed) * game.ball_dir.y * dt
-
-        if next_ball_pos.y > screen.y - game.ball.w  || next_ball_pos.y < 1 {
-            game.ball_dir.y *= -1
-        }
-
-        cpu_change := false
-
-        if next_ball_pos.x > screen.x - game.ball.z  || next_ball_pos.x < 1 {
-            reset(&game, screen)
-            if next_ball_pos.x > 1 {
-                game.score += 1
-
-            } else  {
-                cpu_change = true
-                game.score_cpu += 1
-            }
-        }
-
-
-        //player_hit := false
-        new_dir, player_hit := ball_dir_calculate(game.ball, game.paddle)
-        if player_hit {
-            game.ball_dir = new_dir
-            game.p_ctimer = time.tick_now()
-            p_y := game.ball.y + (game.ball.w / 2)
-            init_p(&p, {game.paddle.x + game.paddle.z, p_y}, {-90, 90})
-            if !sound_playing {
-                sound_playing = true
-                play_sound(&gsound)
-            }
-        }
-
-        new_dir, player_hit = ball_dir_calculate(game.ball, game.ai_paddle)
-        if player_hit {
-            game.ball_dir = new_dir
-            game.ai_ctimer = time.tick_now()
-            p_y := game.ball.y + (game.ball.w / 2)
-            init_p(&p, {game.ai_paddle.x, p_y}, {90, 270})
-            //play_sound(gsound, source_voice)
-            if !sound_playing {
-                play_sound(&gsound)
-                sound_playing = true
-            }
-        }
-
-
-        game.ball.x += game.ball_speed * game.ball_dir.x * dt
-        game.ball.y += game.ball_speed * game.ball_dir.y * dt
-
-        game.ball.y = linalg.clamp(game.ball.y, 0, screen.y - game.ball.w)
-        game.ball.x = linalg.clamp(game.ball.x, 0, screen.x - game.ball.z)
-
-
+        sb = &gstate.sb
         start_drawing()
-        {
-            for y_line : f32 = 0; y_line < screen.y; y_line += 90 {
-                draw_rectangle({screen.x / 2 - 5, y_line, 10, 80})
-                //draw_rectangle({screen.x / 2 - 5, 150, 10, 80})
-            }
 
-            //this uses temp_allocator??
-            score_str := fmt.tprintf("Player : %d", game.score)
-            score_cpu_str := fmt.tprintf("CPU : %d", game.score_cpu)
-            //defer delete(score_str)
+        g.update(&gstate)
 
-            score_len := calc_text_len(score_str)
-            score_cpu_len := calc_text_len(score_cpu_str)
-
-            draw_rectangle({screen.x / 2 - f32(score_len) - 25, 0, 5, 50})
-            draw_rectangle({screen.x / 2 - f32(score_len) - 25, 50,
-                          f32(score_len + score_cpu_len) + 50, 5})
-
-            draw_rectangle({screen.x / 2 + f32(score_cpu_len) + 20, 0, 5, 50})
-            draw_text(vec2{screen.x / 2 - f32(score_len) - 10, 10},
-                      score_str, HV_GREEN)
-
-            draw_text(vec2{screen.x / 2 + 15, 10}, score_cpu_str, HV_RED)
-
-            //draw_sprite(.Body_Template0, vec4{50, 50, 200, 200},)
-            if f32(time.duration_seconds(time.tick_since(game.p_ctimer))) < 0.2
-            {
-                draw_rectangle(game.paddle, HV_GREEN)
-            } else {
-                draw_rectangle(game.paddle)
-            }
-            if f32(time.duration_seconds(time.tick_since(game.ai_ctimer))) < 0.2
-            {
-                draw_rectangle(game.ai_paddle, HV_RED)
-            } else {
-                draw_rectangle(game.ai_paddle)
-            }
-            draw_rectangle(game.ball, HV_RED)
-
-            for i : u32 = 0; i < p.count; i += 1 {
-                pa := p.pos[i]
-                draw_rectangle({pa.x, pa.y, 4, 4})
-            }
-        }
         end_drawing(&render)
 
         sound_play_s += dt
@@ -1224,7 +871,7 @@ main :: proc() {
             sound_playing = false
         }
 
-        old_input, new_input = new_input, old_input
+        old_input, gstate.new_input = gstate.new_input, old_input
 
         free_all(context.temp_allocator)
     }
