@@ -1,3 +1,13 @@
+/*
+    TODO : VIEWPORRTRTTT
+
+
+*/
+
+
+
+
+
 package Pong
 
 import "core:fmt"
@@ -22,6 +32,7 @@ vec3 :: g.vec3
 vec4 :: g.vec4
 
 AUDIO_FILE :: #load("./assets/sfx.wav")
+TEXTURE_ATLAS :: #load("./assets/atlas.png")
 
 //sb : SpriteBatch
 running := false
@@ -310,7 +321,7 @@ main :: proc() {
     gl.GenVertexArrays(1, &vao);
 
     width, height, nr_channels : i32
-    data := stbi.load("assets/atlas.png", &width, &height, &nr_channels, 0);
+    data := stbi.load_from_memory(raw_data(TEXTURE_ATLAS), i32(len(TEXTURE_ATLAS)),&width, &height, &nr_channels, 0);
     hv_assert(data != nil, "failed loading texture atlas")
 
     texture : u32
