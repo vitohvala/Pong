@@ -30,6 +30,9 @@ import atlas "atlas"
 
 import g "game"
 
+texture_atlas :: #load("assets/atlas.png")
+SFX_SOUND :: #load("assets/sfx.wav")
+
 /*===============================================================================
                                         STRUCTS
   ===============================================================================*/
@@ -454,7 +457,7 @@ init_d3d :: proc(handle : win.HWND) -> DxData {
         hv_assert(win.SUCCEEDED(res), string("CreateRasterizerState failed"))
 
         twidth, theight, nr_channels : i32
-        image_data := stbi.load(atlas.TEXTURE_FILENAME, &twidth, &theight, &nr_channels, 4)
+        image_data := stbi.load_from_memory(raw_data(texture_atlas), i32(len(texture_atlas)), &twidth, &theight, &nr_channels, 4)
         hv_assert(image_data != nil, string("Image data is null"))
 
         texture_desc := d11.TEXTURE2D_DESC{
@@ -600,91 +603,39 @@ init_sound :: proc(alloc : runtime.Allocator) -> GSound{
     wv.nBlockAlign = wv.nChannels * 2
     wv.nAvgBytesPerSec = wv.nSamplesPerSec * u32(wv.nChannels) * 2
 
-    //
     res = gs.xaudio->CreateSourceVoice(&gs.sfx.srcvoice, &wv)
     assert(res == win.S_OK, "CreateSourceVoice failed")
 
     res = gs.sfx.srcvoice->SetVolume(gs.sfx.volume)
     assert(res == win.S_OK, "SetVolume failed")
 
-    // load wav file
-    riff : u32
-    data_offset : u16
-    data_chunk_search : u32
-    data_chunk_size : u32
+    wav := SFX_SOUND
+    riff_header := cast(^[4]u8)&wav[0]
+    riff__h := [4]u8{ 0x52, 0x49, 0x46, 0x46 };
+    hv_assert(riff__h  == (riff_header^), "not riff - from memory")
 
-    file_handle : win.HANDLE = win.INVALID_HANDLE_VALUE
+    wvf : win.WAVEFORMATEX
+    mem.copy(&gs.wvf, &wav[20], size_of(win.WAVEFORMATEX))
 
-    file_handle = win.CreateFileW(win.L("assets/sfx.wav"), win.GENERIC_READ,
-        win.FILE_SHARE_READ, nil, win.OPEN_EXISTING,
-        win.FILE_ATTRIBUTE_NORMAL, nil)
-
-    hv_assert(file_handle != win.INVALID_HANDLE_VALUE)
-
-    bytes_read : u32 = 0
-    hv_assert(win.ReadFile(file_handle, &riff, size_of(u32), &bytes_read, nil) == true,
-        "ReadFile failed")
-
-
-    if riff != 0x46464952 {
-        log.error("not riff")
-        running = false
-    }
-
-    hv_assert(win.SetFilePointer(file_handle, 20, nil, win.FILE_BEGIN) !=
-        win.INVALID_SET_FILE_POINTER, "SetFileFormat failed")
-
-    //wave_format_read : win.WAVEFORMATEX
-    hv_assert(win.ReadFile(file_handle, &gs.wvf,
-        size_of(win.WAVEFORMATEX), &bytes_read, nil) == true,
-    "ReadFile 2 failed")
-
-    //this is only temporary
     hv_assert((gs.wvf.nBlockAlign == (gs.wvf.nChannels *
                gs.wvf.wBitsPerSample) / 8) ||
                gs.wvf.wFormatTag == win.WAVE_FORMAT_PCM ||
                gs.wvf.wBitsPerSample == 16,  "Sound Data Type Mismatch")
 
+    data_chunk_s := cast(^[4]u8)&wav[36]
+    riff__h = [4]u8{ 0x64, 0x61, 0x74, 0x61 };
+    hv_assert(riff__h  == (data_chunk_s^), "data not found - from memory")
 
-
-
-    win.SetFilePointer(file_handle, i32(36), nil, win.FILE_BEGIN)
-
-    win.ReadFile(file_handle, &data_chunk_search, size_of(u32),
-        &bytes_read, nil)
-
-    hv_assert(data_chunk_search == 0x61746164, "Glup si") // backwards
-
-    win.SetFilePointer(file_handle, i32(40), nil, win.FILE_BEGIN)
-
-    win.ReadFile(file_handle, &data_chunk_size, size_of(u32), &bytes_read, nil)
+    data_chunk_size :=  (cast(^u32)&wav[40])^
 
     gs.data.pAudioData = make([^]u8, data_chunk_size, alloc)
     gs.data.Flags = { .END_OF_STREAM }
     gs.data.AudioBytes = data_chunk_size
 
-
-    win.SetFilePointer(file_handle, i32(44), nil, win.FILE_BEGIN)
-
-    win.ReadFile(file_handle, gs.data.pAudioData,
-        data_chunk_size, &bytes_read, nil)
-
-    //0x1ba60dd40dd50000
-    //hv_assert(res != 0, "ReadFile failed")
-    // just use #load
-    //file_data, file_success :=os.read_entire_file("assets/sfx.wav", context.temp_allocator)
-    //if !file_success {
-    //    log.error("File assets/sfx.wav doesn't exist")
-    //    running = false
-    //}
-
-
-
-    //log.info(file_data)
+    gs.data.pAudioData = raw_data(wav[44:44 + data_chunk_size])
 
     log.info("Initialized Xaudio2")
     free_all(context.temp_allocator)
-
 
     return gs
 }

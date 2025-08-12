@@ -1,3 +1,3 @@
 @echo off
 
-odin build . -disable-assert -subsystem:windows -out:pong.exe
+odin build main.odin -file -disable-assert -subsystem:windows -out:pong.exe
