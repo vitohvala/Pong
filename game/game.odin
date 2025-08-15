@@ -69,7 +69,7 @@ GameState :: struct {
     ai_target_y: f32,
     ai_reaction_delay: f32,
     ai_reaction_timer: f32,
-    ai_ctimer, p_ctimer : time.Tick,
+    ai_ctimer, p_ctimer : f32,
     screen : vec2,
     play_sound : proc(),
     p : Particle,
@@ -367,7 +367,7 @@ update :: proc (using game: ^GameState) {
     new_dir, player_hit := ball_dir_calculate(ball, paddle)
     if player_hit {
         ball_dir = new_dir
-        p_ctimer = time.tick_now()
+        p_ctimer = 0
         p_y := ball.y + (ball.w / 2)
         init_p(&p, {paddle.x + paddle.z, p_y}, {-90, 90})
         if !sound_playing {
@@ -379,7 +379,7 @@ update :: proc (using game: ^GameState) {
     new_dir, player_hit = ball_dir_calculate(ball, ai_paddle)
     if player_hit {
         ball_dir = new_dir
-        ai_ctimer = time.tick_now()
+        ai_ctimer = 0
         p_y := ball.y + (ball.w / 2)
         init_p(&p, {ai_paddle.x, p_y}, {90, 270})
         //play_sound(gsound, source_voice)
@@ -415,12 +415,14 @@ update :: proc (using game: ^GameState) {
         score_str, HV_GREEN)
     draw_text(vec2{screen.x / 2 + 15, 10}, score_cpu_str, HV_RED)
     //draw_sprite(.Body_Template0, vec4{50, 50, 200, 200},)
-    if f32(time.duration_seconds(time.tick_since(p_ctimer))) < 0.2 {
+    p_ctimer += dt
+    if p_ctimer  < 0.2 {
         draw_rectangle(paddle, HV_GREEN)
     } else {
         draw_rectangle(paddle)
     }
-    if f32(time.duration_seconds(time.tick_since(ai_ctimer))) < 0.2 {
+    ai_ctimer += dt
+    if ai_ctimer < 0.2 {
         draw_rectangle(ai_paddle, HV_RED)
     } else {
         draw_rectangle(ai_paddle)

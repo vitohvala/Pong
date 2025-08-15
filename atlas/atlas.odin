@@ -269,7 +269,7 @@ glyphs: []Glyph = {
 	{ rect = {155, 28, 18, 25}, value = '?', offset_x = 0, offset_y = 0, advance_x = 24},
 	{ rect = {107, 29, 4, 25}, value = '!', offset_x = 0, offset_y = 0, advance_x = 10},
 	{ rect = {142, 1, 22, 25}, value = '&', offset_x = 0, offset_y = 0, advance_x = 28},
-	{ rect = {295, 94, 8, 8}, value = '.', offset_x = 0, offset_y = 16, advance_x = 14},
+	{ rect = {295, 96, 6, 4}, value = '.', offset_x = 0, offset_y = 16, advance_x = 14},
 	{ rect = {274, 94, 8, 12}, value = ',', offset_x = 0, offset_y = 16, advance_x = 14},
 	{ rect = {305, 94, 18, 5}, value = '_', offset_x = 0, offset_y = 27, advance_x = 24},
 	{ rect = {82, 56, 8, 18}, value = ':', offset_x = 0, offset_y = 6, advance_x = 14},

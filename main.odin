@@ -700,7 +700,6 @@ main :: proc() {
     for running {
         gstate.dt = f32(time.duration_seconds(time.tick_lap_time(&tick)))
 
-
         for oldi, ind in old_input {
             gstate.new_input[ind].ended_down = oldi.ended_down
         }
